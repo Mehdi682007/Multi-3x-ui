@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # Multi 3x-ui Manager
 # Author: ParsDigital
