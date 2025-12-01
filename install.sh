@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
 # Multi 3x-ui Manager
 # Author: ParsDigital
@@ -35,7 +35,7 @@ pause()        { read -rp "Press Enter to continue..." _; }
 
 require_root() {
   if [[ "$EUID" -ne 0 ]]; then
-    color_red "Please run this script as root (sudo -i && bash multi-3xui.sh)"
+    color_red "Please run this script as root (sudo -i && bash install.sh)"
     exit 1
   fi
 }
@@ -158,19 +158,38 @@ print_logo() {
 EOF
 }
 
+print_title_box() {
+  local text="$1"
+  local padding=2   # spaces left/right
+  local inner_len=$(( ${#text} + padding * 2 ))
+  local box_color="\e[38;5;51m"
+  local reset="\e[0m"
+
+  local top="╔"
+  local bottom="╚"
+  local i
+  for (( i=0; i<inner_len; i++ )); do
+    top+="═"
+    bottom+="═"
+  done
+  top+="╗"
+  bottom+="╝"
+
+  local spaces
+  spaces=$(printf '%*s' "$padding" "")
+  local middle="║${spaces}${text}${spaces}║"
+
+  echo -e "${box_color}${top}${reset}"
+  echo -e "${box_color}${middle}${reset}"
+  echo -e "${box_color}${bottom}${reset}"
+}
+
 print_header() {
   clear
   print_logo
   echo
-
-  # Title box
-  local box_color="\e[38;5;51m"
-  local reset="\e[0m"
-  echo -e "${box_color}╔══════════════════════════════╗${reset}"
-  echo -e "${box_color}║      ${SCRIPT_NAME}      ║${reset}"
-  echo -e "${box_color}╚══════════════════════════════╝${reset}"
+  print_title_box "${SCRIPT_NAME}"
   echo
-
   echo -e " 🧩 Version   : \e[35m${SCRIPT_VERSION}\e[0m"
   echo -e " 🌐 Server IP : \e[36m${SERVER_IP}\e[0m"
   echo -e " ▶️ YouTube   : \e[34m${YOUTUBE_URL}\e[0m"
@@ -330,7 +349,6 @@ get_existing_panels_count() {
     echo 0
     return
   fi
-  # simple count of lines starting with two spaces then xui
   local count
   count=$(grep -E '^[[:space:]]+xui[0-9]+:' "${COMPOSE_FILE}" | wc -l || true)
   echo "$count"
@@ -358,7 +376,6 @@ add_new_panel() {
 
   # ports
   while IFS= read -r line; do
-    # line looks like: - "2020:2053"
     local host_port
     host_port=$(echo "$line" | sed -E 's/.*"([0-9]+):2053".*/\1/' || true)
     if [[ -n "$host_port" ]]; then
@@ -368,7 +385,6 @@ add_new_panel() {
 
   # ranges
   while IFS= read -r line; do
-    # line looks like: - "10000-10099:10000-10099"
     local left
     left=$(echo "$line" | sed -E 's/.*"([0-9]+-[0-9]+):.*/\1/' || true)
     if [[ -n "$left" ]]; then
@@ -486,10 +502,8 @@ reset_panel() {
     return
   fi
 
-  # stop container (ignore errors)
   docker stop "xui_panel_${idx}" >/dev/null 2>&1 || true
 
-  # wipe DB
   rm -rf "xui${idx}/db"/*
   color_green "DB for panel #${idx} wiped."
 
@@ -547,6 +561,14 @@ show_status() {
 main_menu() {
   while true; do
     print_header
+
+    local menu_color="\e[38;5;45m"
+    local reset="\e[0m"
+    echo -e "${menu_color}┌───────────────────── Menu ─────────────────────┐${reset}"
+    echo -e "${menu_color}│         Use numbers to select an option        │${reset}"
+    echo -e "${menu_color}└────────────────────────────────────────────────┘${reset}"
+    echo
+
     echo -e " \e[38;5;45m1)\e[0m 🚀 \e[38;5;45mInitial install / Rebuild multi 3x-ui\e[0m"
     echo -e " \e[38;5;82m2)\e[0m ➕ \e[38;5;82mAdd new panel\e[0m"
     echo -e " \e[38;5;220m3)\e[0m ♻️ \e[38;5;220mReset a panel (wipe DB and restart)\e[0m"
@@ -554,6 +576,7 @@ main_menu() {
     echo -e " \e[38;5;39m5)\e[0m 📊 \e[38;5;39mShow status\e[0m"
     echo -e " \e[38;5;244m0)\e[0m ❌ \e[38;5;244mExit\e[0m"
     echo
+
     read -rp "Select an option: " choice
     case "$choice" in
       1) generate_compose_initial ;;
