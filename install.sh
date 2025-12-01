@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Multi 3x-ui Docker Manager
+# Multi 3x-ui Manager
 # Author: ParsDigital
 # Tested on: Ubuntu/Debian (root required)
 
@@ -9,7 +9,7 @@ set -uo pipefail
 #  Script metadata     #
 ########################
 
-SCRIPT_NAME="Multi 3x-ui Docker Manager"
+SCRIPT_NAME="Multi 3x-ui Manager"
 SCRIPT_VERSION="1.1"
 YOUTUBE_URL="https://www.youtube.com/@ParsDigital/"
 TELEGRAM_URL="https://t.me/+2S96GjBZJ1cxYzVk"
@@ -126,7 +126,7 @@ ensure_dirs() {
 }
 
 print_logo() {
-  # Multi-color ASCII logo (line-by-line rainbow)
+  # Compact multi-color ASCII logo (better on small screens)
   local colors=(
     "\e[38;5;196m"
     "\e[38;5;202m"
@@ -141,7 +141,6 @@ print_logo() {
   local i=0
 
   while IFS= read -r line; do
-    # keep empty lines as blank
     if [[ -z "$line" ]]; then
       printf "\n"
       continue
@@ -150,17 +149,12 @@ print_logo() {
     printf "%b%s%b\n" "$color" "$line" "$reset"
     ((i++))
   done << 'EOF'
-                                                                                                                                       
-88888888ba   88888888ba,       88b           d88               88           88      ad888888b,                                     88  
-88      "8b  88      `"8b      888b         d888               88    ,d     ""     d8"     "88                                     ""  
-88      ,8P  88        `8b     88`8b       d8'88               88    88                    a8P                                         
-88aaaaaa8P'  88         88     88 `8b     d8' 88  88       88  88  MM88MMM  88          aad8"   8b,     ,d8           88       88  88  
-88""""""'    88         88     88  `8b   d8'  88  88       88  88    88     88          ""Y8,    `Y8, ,8P'  aaaaaaaa  88       88  88  
-88           88         8P     88   `8b d8'   88  88       88  88    88     88             "8b     )888(    """"""""  88       88  88  
-88           88      .a8P      88    `888'    88  "8a,   ,a88  88    88,    88     Y8,     a88   ,d8" "8b,            "8a,   ,a88  88  
-88           88888888Y"'       88     `8'     88   `"YbbdP'Y8  88    "Y888  88      "Y888888P'  8P'     `Y8            `"YbbdP'Y8  88  
-                                                                                                                                       
-                                                                                                                                       
+  __  __       _ _   _  _         _       
+ |  \/  | __ _(_) |_| || |  _   _(_)_ __  
+ | |\/| |/ _` | | __| || |_| | | | | '_ \ 
+ | |  | | (_| | | |_|__   _| |_| | | | | |
+ |_|  |_|\__,_|_|\__|  |_|  \__,_|_|_| |_|
+                                          
 EOF
 }
 
@@ -168,12 +162,19 @@ print_header() {
   clear
   print_logo
   echo
-  color_green " ${SCRIPT_NAME}"
-  echo -e " Version     : \e[35m${SCRIPT_VERSION}\e[0m"
-  echo -e " Base dir    : \e[36m${BASE_DIR}\e[0m"
-  echo -e " Server IP   : \e[36m${SERVER_IP}\e[0m"
-  echo -e " YouTube     : \e[34m${YOUTUBE_URL}\e[0m"
-  echo -e " Telegram    : \e[34m${TELEGRAM_URL}\e[0m"
+
+  # Title box
+  local box_color="\e[38;5;51m"
+  local reset="\e[0m"
+  echo -e "${box_color}╔══════════════════════════════╗${reset}"
+  echo -e "${box_color}║      ${SCRIPT_NAME}      ║${reset}"
+  echo -e "${box_color}╚══════════════════════════════╝${reset}"
+  echo
+
+  echo -e " 🧩 Version   : \e[35m${SCRIPT_VERSION}\e[0m"
+  echo -e " 🌐 Server IP : \e[36m${SERVER_IP}\e[0m"
+  echo -e " ▶️ YouTube   : \e[34m${YOUTUBE_URL}\e[0m"
+  echo -e " 💬 Telegram  : \e[34m${TELEGRAM_URL}\e[0m"
   echo "----------------------------------------"
   echo
 }
@@ -546,12 +547,12 @@ show_status() {
 main_menu() {
   while true; do
     print_header
-    echo "1) Initial install / Rebuild multi 3x-ui"
-    echo "2) Add new panel"
-    echo "3) Reset a panel (wipe DB and restart)"
-    echo "4) Uninstall all panels (FULL REMOVE)"
-    echo "5) Show status"
-    echo "0) Exit"
+    echo -e " \e[38;5;45m1)\e[0m 🚀 \e[38;5;45mInitial install / Rebuild multi 3x-ui\e[0m"
+    echo -e " \e[38;5;82m2)\e[0m ➕ \e[38;5;82mAdd new panel\e[0m"
+    echo -e " \e[38;5;220m3)\e[0m ♻️ \e[38;5;220mReset a panel (wipe DB and restart)\e[0m"
+    echo -e " \e[38;5;196m4)\e[0m 🗑️ \e[38;5;196mUninstall all panels (FULL REMOVE)\e[0m"
+    echo -e " \e[38;5;39m5)\e[0m 📊 \e[38;5;39mShow status\e[0m"
+    echo -e " \e[38;5;244m0)\e[0m ❌ \e[38;5;244mExit\e[0m"
     echo
     read -rp "Select an option: " choice
     case "$choice" in
