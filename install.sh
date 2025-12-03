@@ -12,7 +12,7 @@ set -uo pipefail
 ########################
 
 SCRIPT_NAME="Multi 3x-ui Manager Pro"
-SCRIPT_VERSION="1.1"
+SCRIPT_VERSION="1.4"
 YOUTUBE_URL="https://www.youtube.com/@ParsDigital/"
 TELEGRAM_URL="https://t.me/+2S96GjBZJ1cxYzVk"
 
