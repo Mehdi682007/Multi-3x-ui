@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Multi 3x-ui Manager
-# Author: ParsDigital
+# Multi 3x-ui Docker Manager (All-in-One)
+# - Install & manage multiple 3x-ui panels with Docker
+# - Per-panel monthly quota (GB) + time validity (days)
+# - Quota monitor (manual/debug + cron mode)
 # Tested on: Ubuntu/Debian (root required)
 
 ########################
 #  Script metadata     #
 ########################
 
-SCRIPT_NAME="Multi 3x-ui Manager"
+SCRIPT_NAME="Multi 3x-ui Manager Pro"
 SCRIPT_VERSION="1.1"
 YOUTUBE_URL="https://www.youtube.com/@ParsDigital/"
 TELEGRAM_URL="https://t.me/+2S96GjBZJ1cxYzVk"
@@ -22,6 +24,10 @@ BASE_DIR=""
 COMPOSE_FILE=""
 DOCKER_COMPOSE_CMD=""
 SERVER_IP=""
+META_FILE=""
+SCRIPT_PATH=""
+CRON_TAG="# MULTI_3XUI_QUOTA"
+CRON_EXPR="*/5 * * * *"
 
 ########################
 #  Helper functions    #
@@ -35,19 +41,103 @@ pause()        { read -rp "Press Enter to continue..." _; }
 
 require_root() {
   if [[ "$EUID" -ne 0 ]]; then
-    color_red "Please run this script as root (sudo -i && bash install.sh)"
+    color_red "Please run this script as root (e.g. sudo -i && bash $(basename "$0"))"
     exit 1
   fi
 }
 
+print_logo() {
+  # Compact multi-color ASCII logo (better on small screens)
+  local colors=(
+    "\e[38;5;196m"
+    "\e[38;5;202m"
+    "\e[38;5;208m"
+    "\e[38;5;214m"
+    "\e[38;5;220m"
+    "\e[38;5;46m"
+    "\e[38;5;51m"
+    "\e[38;5;27m"
+  )
+  local reset="\e[0m"
+  local i=0
+
+  while IFS= read -r line; do
+    if [[ -z "$line" ]]; then
+      printf "\n"
+      continue
+    fi
+    local color="${colors[i % ${#colors[@]}]}"
+    printf "%b%s%b\n" "$color" "$line" "$reset"
+    ((i++))
+  done << 'EOF'
+   ___  ___                _ _   _   _____                _     ___           
+  / _ \/   \   /\/\  _   _| | |_(_) |___ /_  __     _   _(_)   / _ \_ __ ___  
+ / /_)/ /\ /  /    \| | | | | __| |   |_ \ \/ /____| | | | |  / /_)/ '__/ _ \ 
+/ ___/ /_//  / /\/\ \ |_| | | |_| |  ___) >  <_____| |_| | | / ___/| | | (_) |
+\/  /___,'   \/    \/\__,_|_|\__|_| |____/_/\_\     \__,_|_| \/    |_|  \___/ 
+                                                                              
+
+
+EOF
+}
+
+print_title_box() {
+  local text="$1"
+  local padding=2   # spaces left/right
+  local inner_len=$(( ${#text} + padding * 2 ))
+  local box_color="\e[38;5;51m"
+  local reset="\e[0m"
+
+  local top="╔"
+  local bottom="╚"
+  local i
+  for (( i=0; i<inner_len; i++ )); do
+    top+="═"
+    bottom+="═"
+  done
+  top+="╗"
+  bottom+="╝"
+
+  local spaces
+  spaces=$(printf '%*s' "$padding" "")
+  local middle="║${spaces}${text}${spaces}║"
+
+  echo -e "${box_color}${top}${reset}"
+  echo -e "${box_color}${middle}${reset}"
+  echo -e "${box_color}${bottom}${reset}"
+}
+
+print_header() {
+  clear
+  print_logo
+  echo
+  print_title_box "${SCRIPT_NAME}"
+  echo
+  echo -e " 🧩 Version   : \e[35m${SCRIPT_VERSION}\e[0m"
+  echo -e " 🌐 Server IP : \e[36m${SERVER_IP}\e[0m"
+  echo -e " 📁 Base dir  : \e[36m${BASE_DIR}\e[0m"
+  echo -e " ▶️ YouTube   : \e[34m${YOUTUBE_URL}\e[0m"
+  echo -e " 💬 Telegram  : \e[34m${TELEGRAM_URL}\e[0m"
+  echo "----------------------------------------"
+  echo
+}
+
+########################
+#  Core helpers        #
+########################
+
+detect_script_path() {
+  SCRIPT_PATH="$(readlink -f "$0")"
+}
+
 detect_base_dir() {
-  # If docker is installed via snap, we must use its confined data path
   if command -v snap >/dev/null 2>&1 && snap list docker >/dev/null 2>&1; then
     BASE_DIR="/var/snap/docker/common/3xui-multi"
   else
     BASE_DIR="/opt/3xui-multi"
   fi
   COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
+  META_FILE="${BASE_DIR}/panels-meta.conf"
 }
 
 detect_docker_compose_cmd() {
@@ -103,13 +193,11 @@ install_docker_if_needed() {
 }
 
 detect_server_ip() {
-  # Try public IPv4 first
   local ip=""
   if command -v curl >/dev/null 2>&1; then
     ip=$(curl -4s https://ifconfig.me || curl -4s https://ipv4.icanhazip.com || true)
   fi
   if [[ -z "${ip}" ]]; then
-    # Fallback: first IP from hostname -I
     if command -v hostname >/dev/null 2>&1; then
       ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     fi
@@ -125,77 +213,27 @@ ensure_dirs() {
   cd "${BASE_DIR}"
 }
 
-print_logo() {
-  # Compact multi-color ASCII logo (better on small screens)
-  local colors=(
-    "\e[38;5;196m"
-    "\e[38;5;202m"
-    "\e[38;5;208m"
-    "\e[38;5;214m"
-    "\e[38;5;220m"
-    "\e[38;5;46m"
-    "\e[38;5;51m"
-    "\e[38;5;27m"
-  )
-  local reset="\e[0m"
-  local i=0
+########################
+#  Meta (quota)        #
+########################
 
-  while IFS= read -r line; do
-    if [[ -z "$line" ]]; then
-      printf "\n"
-      continue
-    fi
-    local color="${colors[i % ${#colors[@]}]}"
-    printf "%b%s%b\n" "$color" "$line" "$reset"
-    ((i++))
-  done << 'EOF'
- ___ __    __ __ _  _ _ _____ _   __  __   __  _  _ _  
-| _,\ _\  |  V  | || | |_   _| | |__`.\ \_/ /_| || | | 
-| v_/ v | | \_/ | \/ | |_| | | |  |_ | > , <__| \/ | | 
-|_| |__/  |_| |_|\__/|___|_| |_| |__.'/_/ \_\  \__/|_| 
-
-                                          
-EOF
+load_meta() {
+  if [[ -f "${META_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${META_FILE}"
+  fi
 }
 
-print_title_box() {
-  local text="$1"
-  local padding=2   # spaces left/right
-  local inner_len=$(( ${#text} + padding * 2 ))
-  local box_color="\e[38;5;51m"
-  local reset="\e[0m"
-
-  local top="╔"
-  local bottom="╚"
-  local i
-  for (( i=0; i<inner_len; i++ )); do
-    top+="═"
-    bottom+="═"
-  done
-  top+="╗"
-  bottom+="╝"
-
-  local spaces
-  spaces=$(printf '%*s' "$padding" "")
-  local middle="║${spaces}${text}${spaces}║"
-
-  echo -e "${box_color}${top}${reset}"
-  echo -e "${box_color}${middle}${reset}"
-  echo -e "${box_color}${bottom}${reset}"
-}
-
-print_header() {
-  clear
-  print_logo
-  echo
-  print_title_box "${SCRIPT_NAME}"
-  echo
-  echo -e " 🧩 Version   : \e[35m${SCRIPT_VERSION}\e[0m"
-  echo -e " 🌐 Server IP : \e[36m${SERVER_IP}\e[0m"
-  echo -e " ▶️ YouTube   : \e[34m${YOUTUBE_URL}\e[0m"
-  echo -e " 💬 Telegram  : \e[34m${TELEGRAM_URL}\e[0m"
-  echo "----------------------------------------"
-  echo
+set_meta() {
+  local key="$1"
+  local val="$2"
+  mkdir -p "${BASE_DIR}"
+  touch "${META_FILE}"
+  if grep -q "^${key}=" "${META_FILE}" 2>/dev/null; then
+    sed -i "s/^${key}=.*/${key}=${val}/" "${META_FILE}"
+  else
+    echo "${key}=${val}" >> "${META_FILE}"
+  fi
 }
 
 ########################
@@ -220,7 +258,6 @@ ask_int() {
 
 port_range_overlap() {
   local s1="$1" e1="$2" s2="$3" e2="$4"
-  # overlap if s1<=e2 AND s2<=e1
   if (( s1 <= e2 && s2 <= e1 )); then
     return 0
   else
@@ -236,12 +273,12 @@ generate_compose_initial() {
   local num_panels
   num_panels=$(ask_int "How many panels do you want to create?" "2")
 
-  # Arrays to keep track for overlap checking
   declare -a PANEL_PORTS
   declare -a RANGE_STARTS
   declare -a RANGE_ENDS
 
-  # Build compose file
+  : > "${META_FILE}"
+
   cat > "${COMPOSE_FILE}" <<EOF
 version: "3.8"
 
@@ -252,12 +289,10 @@ EOF
     echo
     color_yellow "--- Panel #${i} configuration ---"
 
-    # Default panel port: 2020 + (i-1)
     local default_panel_port=$((2020 + i - 1))
     local panel_port
     while true; do
       panel_port=$(ask_int "Panel #${i} web port (host)?" "${default_panel_port}")
-      # check unique
       local conflict=0
       for p in "${PANEL_PORTS[@]:-}"; do
         if [[ "$panel_port" -eq "$p" ]]; then
@@ -273,7 +308,6 @@ EOF
       fi
     done
 
-    # Default range: 10000 + (i-1)*100 .. start+99
     local default_start=$((10000 + (i-1)*100))
     local default_end=$((default_start + 99))
     local range_start range_end
@@ -286,7 +320,6 @@ EOF
         continue
       fi
 
-      # Check overlap with previous ranges
       local overlap=0
       local idx
       for idx in "${!RANGE_STARTS[@]}"; do
@@ -305,10 +338,33 @@ EOF
       fi
     done
 
-    # Create directories for this panel
+    # Ask quota
+    local quota_gb
+    quota_gb=$(ask_int "Monthly quota for panel #${i} in GB (0 = unlimited)?" "0")
+
+    # Ask validity days
+    local valid_days
+    valid_days=$(ask_int "Validity period (days, 0 = no time limit) for panel #${i}?" "30")
+
     mkdir -p "xui${i}/db" "xui${i}/cert"
 
-    # Append service to compose file
+    set_meta "PANEL_${i}_QUOTA_GB" "${quota_gb}"
+    set_meta "PANEL_${i}_USED_GB" "0"
+    set_meta "PANEL_${i}_USED_BYTES" "0"
+    set_meta "PANEL_${i}_LAST_BYTES" "0"
+
+    set_meta "PANEL_${i}_VALID_DAYS" "${valid_days}"
+    if (( valid_days > 0 )); then
+      local now_ts expire_ts
+      now_ts=$(date +%s)
+      expire_ts=$(( now_ts + valid_days * 86400 ))
+      set_meta "PANEL_${i}_START_TS" "${now_ts}"
+      set_meta "PANEL_${i}_EXPIRE_TS" "${expire_ts}"
+    else
+      set_meta "PANEL_${i}_START_TS" "0"
+      set_meta "PANEL_${i}_EXPIRE_TS" "0"
+    fi
+
     cat >> "${COMPOSE_FILE}" <<EOF
 
   xui${i}:
@@ -329,7 +385,6 @@ EOF
 
   done
 
-  color_green
   color_green "docker-compose.yml generated at: ${COMPOSE_FILE}"
   echo
   color_green "Bringing up all panels with Docker..."
@@ -344,7 +399,6 @@ EOF
 }
 
 get_existing_panels_count() {
-  # Count services named xuiN in compose file
   if [[ ! -f "${COMPOSE_FILE}" ]]; then
     echo 0
     return
@@ -369,12 +423,10 @@ add_new_panel() {
   color_green "=== Add new panel (Panel #${new_index}) ==="
   echo
 
-  # Collect existing ports and ranges for validation
   declare -a PANEL_PORTS
   declare -a RANGE_STARTS
   declare -a RANGE_ENDS
 
-  # ports
   while IFS= read -r line; do
     local host_port
     host_port=$(echo "$line" | sed -E 's/.*"([0-9]+):2053".*/\1/' || true)
@@ -383,7 +435,6 @@ add_new_panel() {
     fi
   done < <(grep -E '"[0-9]+:2053"' "${COMPOSE_FILE}" || true)
 
-  # ranges
   while IFS= read -r line; do
     local left
     left=$(echo "$line" | sed -E 's/.*"([0-9]+-[0-9]+):.*/\1/' || true)
@@ -396,7 +447,6 @@ add_new_panel() {
     fi
   done < <(grep -E '"[0-9]+-[0-9]+:[0-9]+-[0-9]+"' "${COMPOSE_FILE}" || true)
 
-  # Ask new panel port
   local default_panel_port=$((2020 + new_index - 1))
   local panel_port
   while true; do
@@ -415,7 +465,6 @@ add_new_panel() {
     fi
   done
 
-  # Ask new range
   local default_start=$((10000 + (new_index-1)*100))
   local default_end=$((default_start + 99))
   local range_start range_end
@@ -441,7 +490,31 @@ add_new_panel() {
     fi
   done
 
+  local quota_gb
+  quota_gb=$(ask_int "Monthly quota for panel #${new_index} in GB (0 = unlimited)?" "0")
+
+  # Ask validity days
+  local valid_days
+  valid_days=$(ask_int "Validity period (days, 0 = no time limit) for panel #${new_index}?" "30")
+
   mkdir -p "xui${new_index}/db" "xui${new_index}/cert"
+
+  set_meta "PANEL_${new_index}_QUOTA_GB" "${quota_gb}"
+  set_meta "PANEL_${new_index}_USED_GB" "0"
+  set_meta "PANEL_${new_index}_USED_BYTES" "0"
+  set_meta "PANEL_${new_index}_LAST_BYTES" "0"
+
+  set_meta "PANEL_${new_index}_VALID_DAYS" "${valid_days}"
+  if (( valid_days > 0 )); then
+    local now_ts expire_ts
+    now_ts=$(date +%s)
+    expire_ts=$(( now_ts + valid_days * 86400 ))
+    set_meta "PANEL_${new_index}_START_TS" "${now_ts}"
+    set_meta "PANEL_${new_index}_EXPIRE_TS" "${expire_ts}"
+  else
+    set_meta "PANEL_${new_index}_START_TS" "0"
+    set_meta "PANEL_${new_index}_EXPIRE_TS" "0"
+  fi
 
   cat >> "${COMPOSE_FILE}" <<EOF
 
@@ -507,6 +580,10 @@ reset_panel() {
   rm -rf "xui${idx}/db"/*
   color_green "DB for panel #${idx} wiped."
 
+  set_meta "PANEL_${idx}_USED_GB" "0"
+  set_meta "PANEL_${idx}_USED_BYTES" "0"
+  set_meta "PANEL_${idx}_LAST_BYTES" "0"
+
   ${DOCKER_COMPOSE_CMD} -f "${COMPOSE_FILE}" up -d
   color_green "Panel #${idx} restarted with fresh DB (default admin/admin)."
   pause
@@ -544,39 +621,634 @@ uninstall_all() {
   pause
 }
 
-show_status() {
-  print_header
-  color_green "=== Docker containers ==="
-  docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | sed '1!{/xui_panel_/!d}'
-  echo
-  if [[ -f "${COMPOSE_FILE}" ]]; then
-    color_green "docker-compose.yml present at: ${COMPOSE_FILE}"
-  else
-    color_yellow "docker-compose.yml not found."
+set_panel_quota_menu() {
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    color_red "docker-compose.yml not found. Nothing to configure."
+    pause
+    return
   fi
-  echo
+
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing == 0 )); then
+    color_red "No panels found."
+    pause
+    return
+  fi
+
+  load_meta
+  print_header
+  color_green "=== Set / change monthly quota for a panel ==="
+  echo "Existing panels: ${existing}"
+  local idx
+  idx=$(ask_int "Which panel number do you want to configure? (1-${existing})" "1")
+  if (( idx < 1 || idx > existing )); then
+    color_red "Invalid panel number."
+    pause
+    return
+  fi
+
+  local quota_var="PANEL_${idx}_QUOTA_GB"
+  local current_quota="${!quota_var:-0}"
+
+  color_yellow "Current quota for panel #${idx}: ${current_quota} GB (0 = unlimited)"
+  local new_quota
+  new_quota=$(ask_int "New monthly quota in GB (0 = unlimited)?" "${current_quota}")
+  set_meta "${quota_var}" "${new_quota}"
+  color_green "Quota for panel #${idx} set to ${new_quota} GB."
   pause
 }
+
+set_panel_validity_menu() {
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    color_red "docker-compose.yml not found. Nothing to configure."
+    pause
+    return
+  fi
+
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing == 0 )); then
+    color_red "No panels found."
+    pause
+    return
+  fi
+
+  load_meta
+  print_header
+  color_green "=== Set / change validity period (days) for a panel ==="
+  echo "Existing panels: ${existing}"
+  local idx
+  idx=$(ask_int "Which panel number do you want to configure? (1-${existing})" "1")
+  if (( idx < 1 || idx > existing )); then
+    color_red "Invalid panel number."
+    pause
+    return
+  fi
+
+  local valid_days_var="PANEL_${idx}_VALID_DAYS"
+  local start_ts_var="PANEL_${idx}_START_TS"
+  local expire_ts_var="PANEL_${idx}_EXPIRE_TS"
+
+  local current_days="${!valid_days_var:-0}"
+  local start_ts="${!start_ts_var:-0}"
+  local expire_ts="${!expire_ts_var:-0}"
+
+  if [[ "${current_days}" == "0" ]]; then
+    color_yellow "Current validity: ♾️  no time limit"
+  else
+    local end_str=""
+    if [[ "${expire_ts}" != "0" ]]; then
+      end_str=$(date -d "@${expire_ts}" "+%Y-%m-%d" 2>/dev/null || echo "?")
+    fi
+    color_yellow "Current validity: ${current_days} day(s), expires at: ${end_str}"
+  fi
+
+  local new_days
+  new_days=$(ask_int "New validity period in days (0 = no time limit)?" "${current_days:-0}")
+  set_meta "${valid_days_var}" "${new_days}"
+
+  if (( new_days > 0 )); then
+    local now_ts
+    now_ts=$(date +%s)
+    if [[ "${start_ts}" == "0" ]]; then
+      start_ts="${now_ts}"
+      set_meta "${start_ts_var}" "${start_ts}"
+    fi
+    local new_expire=$(( start_ts + new_days * 86400 ))
+    set_meta "${expire_ts_var}" "${new_expire}"
+    local end_str
+    end_str=$(date -d "@${new_expire}" "+%Y-%m-%d" 2>/dev/null || echo "?")
+    color_green "Validity for panel #${idx} set to ${new_days} day(s). New expiry: ${end_str}"
+  else
+    set_meta "${start_ts_var}" "0"
+    set_meta "${expire_ts_var}" "0"
+    color_green "Validity for panel #${idx} set to: ♾️  no time limit."
+  fi
+
+  pause
+}
+
+reset_panel_time_window_menu() {
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    color_red "docker-compose.yml not found. Nothing to configure."
+    pause
+    return
+  fi
+
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing == 0 )); then
+    color_red "No panels found."
+    pause
+    return
+  fi
+
+  load_meta
+  print_header
+  color_green "=== Reset time window (start date) for a panel ==="
+  echo "Existing panels: ${existing}"
+  local idx
+  idx=$(ask_int "Which panel number do you want to reset time window for? (1-${existing})" "1")
+  if (( idx < 1 || idx > existing )); then
+    color_red "Invalid panel number."
+    pause
+    return
+  fi
+
+  local valid_days_var="PANEL_${idx}_VALID_DAYS"
+  local start_ts_var="PANEL_${idx}_START_TS"
+  local expire_ts_var="PANEL_${idx}_EXPIRE_TS"
+
+  local valid_days="${!valid_days_var:-0}"
+
+  if [[ "${valid_days}" == "0" ]]; then
+    color_yellow "This panel currently has no time limit (♾️)."
+    local new_days
+    new_days=$(ask_int "Set a validity period in days first (cannot be 0)?" "30")
+    if (( new_days <= 0 )); then
+      color_red "Validity days must be > 0 to reset time window."
+      pause
+      return
+    fi
+    set_meta "${valid_days_var}" "${new_days}"
+    valid_days="${new_days}"
+  fi
+
+  read -rp "Reset time window for panel #${idx} from NOW (days=${valid_days})? [y/N]: " yn
+  yn=${yn:-N}
+  if [[ ! "$yn" =~ ^[Yy]$ ]]; then
+    color_yellow "Aborted."
+    pause
+    return
+  fi
+
+  local now_ts new_expire
+  now_ts=$(date +%s)
+  new_expire=$(( now_ts + valid_days * 86400 ))
+
+  set_meta "${start_ts_var}" "${now_ts}"
+  set_meta "${expire_ts_var}" "${new_expire}"
+
+  local start_str end_str
+  start_str=$(date -d "@${now_ts}" "+%Y-%m-%d" 2>/dev/null || echo "?")
+  end_str=$(date -d "@${new_expire}" "+%Y-%m-%d" 2>/dev/null || echo "?")
+
+  color_green "Panel #${idx} time window reset."
+  echo "  Start : ${start_str}"
+  echo "  End   : ${end_str}"
+  echo "  Days  : ${valid_days}"
+  echo
+  color_yellow "⚠️ Note: Usage (traffic) is NOT reset here. For traffic reset, use menu option for reset usage."
+  pause
+}
+
+reset_panel_usage_menu() {
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    color_red "docker-compose.yml not found. Nothing to configure."
+    pause
+    return
+  fi
+
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing == 0 )); then
+    color_red "No panels found."
+    pause
+    return
+  fi
+
+  load_meta
+  print_header
+  color_green "=== Reset usage for a panel (USED_GB/bytes -> 0) ==="
+  echo "Existing panels: ${existing}"
+  local idx
+  idx=$(ask_int "Which panel number do you want to reset usage for? (1-${existing})" "1")
+  if (( idx < 1 || idx > existing )); then
+    color_red "Invalid panel number."
+    pause
+    return
+  fi
+
+  read -rp "Are you sure you want to reset usage for panel #${idx}? [y/N]: " yn
+  yn=${yn:-N}
+  if [[ ! "$yn" =~ ^[Yy]$ ]]; then
+    color_yellow "Aborted."
+    pause
+    return
+  fi
+
+  set_meta "PANEL_${idx}_USED_GB" "0"
+  set_meta "PANEL_${idx}_USED_BYTES" "0"
+  set_meta "PANEL_${idx}_LAST_BYTES" "0"
+  color_green "Usage for panel #${idx} reset to 0."
+
+  local cname="xui_panel_${idx}"
+  local cstatus
+  cstatus=$(docker ps -a --filter "name=^${cname}$" --format '{{.Status}}')
+
+  if [[ -n "$cstatus" ]] && ! docker ps --format '{{.Names}}' | grep -q "^${cname}$"; then
+    echo
+    color_yellow "Panel #${idx} (${cname}) is currently STOPPED."
+    read -rp "Do you want to START this panel now? [y/N]: " yn2
+    yn2=${yn2:-N}
+    if [[ "$yn2" =~ ^[Yy]$ ]]; then
+      if docker start "${cname}" >/dev/null 2>&1; then
+        color_green "Panel #${idx} started successfully ✅"
+      else
+        color_red "Failed to start panel #${idx}. You can try manually: docker start ${cname}"
+      fi
+    else
+      color_yellow "Panel remains stopped."
+    fi
+  fi
+
+  pause
+}
+
+show_status() {
+  print_header
+  color_green "🧷 Docker containers (xui_panel_*)"
+  echo
+
+  docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | sed '1!{/xui_panel_/!d}'
+  echo
+
+  if [[ -f "${COMPOSE_FILE}" ]]; then
+    color_green "📄 docker-compose.yml: ${COMPOSE_FILE}"
+  else
+    color_yellow "⚠️ docker-compose.yml not found."
+  fi
+  echo
+
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing > 0 )); then
+    load_meta
+
+    declare -a PANEL_PORTS
+    while IFS= read -r line; do
+      local host_port
+      host_port=$(echo "$line" | sed -E 's/.*"([0-9]+):2053".*/\1/' || true)
+      if [[ -n "$host_port" ]]; then
+        PANEL_PORTS+=("$host_port")
+      fi
+    done < <(grep -E '"[0-9]+:2053"' "${COMPOSE_FILE}" || true)
+
+    echo "📊 Panels summary"
+    echo "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    printf " %-4s │ %-22s │ %-16s │ %-18s │ %-18s │ %-10s\n" "ID" "URL" "Quota" "Used" "Time" "Status"
+    echo   "──────┼───────────────────────────────────────┼──────────────────┼────────────────────┼────────────────────┼────────────"
+
+    local i
+    for (( i=1; i<=existing; i++ )); do
+      local port="${PANEL_PORTS[$((i-1))]:-?}"
+      local quota_var="PANEL_${i}_QUOTA_GB"
+      local used_gb_var="PANEL_${i}_USED_GB"
+      local used_bytes_var="PANEL_${i}_USED_BYTES"
+      local valid_days_var="PANEL_${i}_VALID_DAYS"
+      local start_ts_var="PANEL_${i}_START_TS"
+      local expire_ts_var="PANEL_${i}_EXPIRE_TS"
+
+      local quota="${!quota_var:-0}"
+      local used_gb="${!used_gb_var:-0}"
+      local used_bytes="${!used_bytes_var:-0}"
+      local valid_days="${!valid_days_var:-0}"
+      local start_ts="${!start_ts_var:-0}"
+      local expire_ts="${!expire_ts_var:-0}"
+
+      local quota_text
+      if [[ "${quota}" == "0" ]]; then
+        quota_text="♾️  unltd"
+      else
+        quota_text="${quota} GB"
+      fi
+
+      local used_text
+      local percent="--"
+      if [[ "${quota}" != "0" && "${quota}" != "" ]]; then
+        local quota_bytes=$(( quota * 1024 * 1024 * 1024 ))
+        if (( quota_bytes > 0 )); then
+          percent=$(awk -v u="$used_bytes" -v q="$quota_bytes" 'BEGIN {printf "%.1f", (u/q)*100}')
+        fi
+      fi
+
+      if [[ "${quota}" != "0" ]]; then
+        used_text=$(printf "%.2f GB (%s%%)" "${used_gb}" "${percent}")
+      else
+        used_text=$(printf "%.2f GB" "${used_gb}")
+      fi
+
+      local time_text
+      if [[ "${valid_days}" == "0" || "${expire_ts}" == "0" ]]; then
+        time_text="♾️  no limit"
+      else
+        local now_ts remain rem_days
+        now_ts=$(date +%s)
+        remain=$((expire_ts - now_ts))
+        if (( remain <= 0 )); then
+          time_text="⛔ expired"
+        else
+          rem_days=$(( remain / 86400 ))
+          local end_str
+          end_str=$(date -d "@${expire_ts}" "+%Y-%m-%d")
+          time_text=$(printf "%dd left (%s)" "${rem_days}" "${end_str}")
+        fi
+      fi
+
+      local cname="xui_panel_${i}"
+      local cstatus
+      if docker ps --format '{{.Names}}' | grep -q "^${cname}$" 2>/dev/null; then
+        cstatus="✅ RUN"
+      else
+        cstatus="⛔ STOP"
+      fi
+
+      local url="http://${SERVER_IP}:${port}"
+
+      printf " %-4s │ %-22s │ %-16s │ %-18s │ %-18s │ %-10s\n" "#${i}" "${url}" "${quota_text}" "${used_text}" "${time_text}" "${cstatus}"
+    done
+
+    echo "─────────────────────────────────────────────────────────────────────────────────────────────"
+  fi
+
+  pause
+}
+
+########################
+#  Quota Monitor       #
+########################
+
+human_to_bytes() {
+  local v="$1"
+  v="${v// /}"
+  local num unit power
+  if [[ "$v" =~ ^([0-9]*\.?[0-9]+)([kMGTPE]?B)$ ]]; then
+    num="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+  else
+    echo 0
+    return
+  fi
+  case "$unit" in
+    B)  power=0 ;;
+    kB) power=1 ;;
+    MB) power=2 ;;
+    GB) power=3 ;;
+    TB) power=4 ;;
+    PB) power=5 ;;
+    *)  power=0 ;;
+  esac
+  awk -v n="$num" -v p="$power" 'BEGIN {printf "%.0f", n * (1024^p)}'
+}
+
+quota_process_panel() {
+  local idx="$1"
+  local verbose="$2"
+
+  local quota_var="PANEL_${idx}_QUOTA_GB"
+  local used_bytes_var="PANEL_${idx}_USED_BYTES"
+  local last_bytes_var="PANEL_${idx}_LAST_BYTES"
+  local used_gb_var="PANEL_${idx}_USED_GB"
+
+  local quota_gb="${!quota_var:-0}"
+  local used_bytes="${!used_bytes_var:-0}"
+  local last_bytes="${!last_bytes_var:-0}"
+
+  local valid_days_var="PANEL_${idx}_VALID_DAYS"
+  local start_ts_var="PANEL_${idx}_START_TS"
+  local expire_ts_var="PANEL_${idx}_EXPIRE_TS"
+
+  local valid_days="${!valid_days_var:-0}"
+  local start_ts="${!start_ts_var:-0}"
+  local expire_ts="${!expire_ts_var:-0}"
+
+  local container="xui_panel_${idx}"
+  if ! docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
+    [[ "$verbose" == "1" ]] && color_yellow "⚠️ Panel #${idx} (${container}) is not running, skipping."
+    return
+  fi
+
+  local net_io
+  net_io=$(docker stats --no-stream --format '{{.NetIO}}' "${container}" 2>/dev/null || echo "")
+  if [[ -z "$net_io" ]]; then
+    [[ "$verbose" == "1" ]] && color_yellow "⚠️ Panel #${idx}: unable to read NetIO."
+    return
+  fi
+
+  local rx_str tx_str
+  rx_str="${net_io%%/*}"
+  tx_str="${net_io##*/}"
+
+  rx_str="${rx_str// /}"
+  tx_str="${tx_str// /}"
+
+  local rx_bytes tx_bytes total_bytes
+  rx_bytes=$(human_to_bytes "$rx_str")
+  tx_bytes=$(human_to_bytes "$tx_str")
+  total_bytes=$(( rx_bytes + tx_bytes ))
+
+  if (( last_bytes == 0 )); then
+    set_meta "${last_bytes_var}" "${total_bytes}"
+    set_meta "${used_bytes_var}" "${used_bytes}"
+    [[ "$verbose" == "1" ]] && echo "🟢 Panel #${idx}: first run, baseline set. Total=${total_bytes} bytes."
+    return
+  fi
+
+  local delta=0
+  if (( total_bytes >= last_bytes )); then
+    delta=$((total_bytes - last_bytes))
+  else
+    set_meta "${last_bytes_var}" "${total_bytes}"
+    set_meta "${used_bytes_var}" "${used_bytes}"
+    [[ "$verbose" == "1" ]] && echo "🔄 Panel #${idx}: docker counters reset, updating baseline only."
+    return
+  fi
+
+  used_bytes=$((used_bytes + delta))
+
+  set_meta "${last_bytes_var}" "${total_bytes}"
+  set_meta "${used_bytes_var}" "${used_bytes}"
+
+  local used_gb
+  used_gb=$(awk -v b="$used_bytes" 'BEGIN {printf "%.2f", b/(1024^3)}')
+  set_meta "${used_gb_var}" "${used_gb}"
+
+  if [[ "$verbose" == "1" ]]; then
+    echo "📊 Panel #${idx} (${container}):"
+    echo "  • NetIO now : ${net_io}"
+    echo "  • Delta     : ${delta} bytes (~$(awk -v d="$delta" 'BEGIN {printf "%.3f", d/(1024^3)}') GB)"
+    echo "  • Used total: ${used_bytes} bytes (~${used_gb} GB)"
+  fi
+
+  if [[ "${quota_gb}" != "0" ]]; then
+    local quota_bytes=$(( quota_gb * 1024 * 1024 * 1024 ))
+    if (( used_bytes >= quota_bytes )); then
+      color_red "$(date) ⛔ Panel #${idx} exceeded quota: used ~${used_gb} GB / quota ${quota_gb} GB. Stopping container ${container}."
+      docker stop "${container}" >/dev/null 2>&1 || true
+      return
+    else
+      [[ "$verbose" == "1" ]] && echo "  • Quota: ${quota_gb} GB (still under limit) ✅"
+    fi
+  else
+    [[ "$verbose" == "1" ]] && echo "  • Quota: ♾️  unlimited"
+  fi
+
+  if [[ "${valid_days}" != "0" && "${expire_ts}" != "0" ]]; then
+    local now_ts
+    now_ts=$(date +%s)
+    local remain=$((expire_ts - now_ts))
+    if (( remain <= 0 )); then
+      color_red "$(date) ⛔ Panel #${idx} time expired (valid ${valid_days} day(s)). Stopping container ${container}."
+      docker stop "${container}" >/dev/null 2>&1 || true
+      return
+    else
+      if [[ "$verbose" == "1" ]]; then
+        local rem_days=$(( remain / 86400 ))
+        echo "  • Time: ${rem_days} day(s) left ⏳"
+      fi
+    fi
+  else
+    [[ "$verbose" == "1" ]] && echo "  • Time: ♾️  no time limit"
+  fi
+}
+
+quota_run() {
+  local verbose="$1"
+
+  if [[ ! -f "${COMPOSE_FILE}" ]]; then
+    [[ "$verbose" == "1" ]] && color_yellow "No docker-compose.yml at ${COMPOSE_FILE}, nothing to do."
+    exit 0
+  fi
+
+  load_meta
+  local existing
+  existing=$(get_existing_panels_count)
+  if (( existing == 0 )); then
+    [[ "$verbose" == "1" ]] && color_yellow "No panels defined in compose."
+    exit 0
+  fi
+
+  [[ "$verbose" == "1" ]] && echo "Running quota check for ${existing} panel(s)..."
+  local i
+  for (( i=1; i<=existing; i++ )); do
+    quota_process_panel "$i" "$verbose"
+    [[ "$verbose" == "1" ]] && echo "-----------------------------------------"
+  done
+}
+
+quota_run_debug_menu() {
+  print_header
+  echo "Live docker stats for all panels"
+  echo "Ctrl + C for EXIT (docker stats)."
+  echo
+
+  local containers
+  containers=$(docker ps --format '{{.Names}}' | grep '^xui_panel_' || true)
+
+  if [[ -z "$containers" ]]; then
+    color_yellow "No active container with the name xui_panel_N found."
+    pause
+    return
+  fi
+
+  echo "Containers:"
+  echo "$containers"
+  echo
+
+  local arr=()
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && arr+=("$name")
+  done <<< "$containers"
+
+  set +e
+  docker stats "${arr[@]}"
+  set -e
+}
+
+########################
+#  Cron management     #
+########################
+
+is_cron_enabled() {
+  crontab -l 2>/dev/null | grep -q "${CRON_TAG}" && return 0 || return 1
+}
+
+enable_quota_cron() {
+  local cron_line="${CRON_EXPR} /bin/bash ${SCRIPT_PATH} --quota-cron >/dev/null 2>&1 ${CRON_TAG}"
+
+  local tmp
+  tmp=$(mktemp)
+  crontab -l 2>/dev/null | grep -v "${CRON_TAG}" > "${tmp}" || true
+  echo "${cron_line}" >> "${tmp}"
+  crontab "${tmp}"
+  rm -f "${tmp}"
+  color_green "Quota cron enabled (every ${CRON_EXPR})."
+  pause
+}
+
+disable_quota_cron() {
+  local tmp
+  tmp=$(mktemp)
+  crontab -l 2>/dev/null | grep -v "${CRON_TAG}" > "${tmp}" || true
+  crontab "${tmp}" || true
+  rm -f "${tmp}"
+  color_yellow "Quota cron disabled."
+  pause
+}
+
+toggle_quota_cron_menu() {
+  print_header
+  if is_cron_enabled; then
+    color_green "Quota cron is currently: ENABLED"
+    echo
+    read -rp "Do you want to DISABLE it? [y/N]: " yn
+    yn=${yn:-N}
+    if [[ "$yn" =~ ^[Yy]$ ]]; then
+      disable_quota_cron
+    else
+      color_yellow "No changes made."
+      pause
+    fi
+  else
+    color_yellow "Quota cron is currently: DISABLED"
+    echo
+    read -rp "Do you want to ENABLE it (every ${CRON_EXPR})? [y/N]: " yn
+    yn=${yn:-N}
+    if [[ "$yn" =~ ^[Yy]$ ]]; then
+      enable_quota_cron
+    else
+      color_yellow "No changes made."
+      pause
+    fi
+  fi
+}
+
+########################
+#  Menus / Entry       #
+########################
 
 main_menu() {
   while true; do
     print_header
-
-    local menu_color="\e[38;5;45m"
-    local reset="\e[0m"
-    echo -e "${menu_color}┌───────────────────── Menu ─────────────────────┐${reset}"
-    echo -e "${menu_color}│         Use numbers to select an option        │${reset}"
-    echo -e "${menu_color}└────────────────────────────────────────────────┘${reset}"
+    echo "📦 Panel Management"
     echo
-
-    echo -e " \e[38;5;45m1)\e[0m 🚀 \e[38;5;45mInitial install / Rebuild multi 3x-ui\e[0m"
-    echo -e " \e[38;5;82m2)\e[0m ➕ \e[38;5;82mAdd new panel\e[0m"
-    echo -e " \e[38;5;220m3)\e[0m ♻️ \e[38;5;220mReset a panel (wipe DB and restart)\e[0m"
-    echo -e " \e[38;5;196m4)\e[0m 🗑️ \e[38;5;196mUninstall all panels (FULL REMOVE)\e[0m"
-    echo -e " \e[38;5;39m5)\e[0m 📊 \e[38;5;39mShow status\e[0m"
-    echo -e " \e[38;5;244m0)\e[0m ❌ \e[38;5;244mExit\e[0m"
+    echo "  1) 🚀 Initial install / Rebuild multi 3x-ui"
+    echo "  2) ➕ Add new panel"
+    echo "  3) ♻️  Reset a panel (wipe DB and restart)"
+    echo "  4) 🗑  Uninstall all panels (FULL REMOVE)"
     echo
-
+    echo "📊 Quota & Status"
+    echo
+    echo "  5) 📋 Show status"
+    echo "  6) 🎯 Set / change monthly quota for a panel"
+    echo "  7) 🔁 Reset usage (USED_GB/bytes) for a panel"
+    echo "  8) 🧮 Live docker stats for all panels"
+    echo "  9) ⏱  Enable/Disable automatic quota check (cron)"
+    echo " 10) 📅 Set / change validity days for a panel"
+    echo " 11) 🔄 Reset time window (start date) for a panel"
+    echo
+    echo "  0) ❌ Exit"
     read -rp "Select an option: " choice
     case "$choice" in
       1) generate_compose_initial ;;
@@ -584,6 +1256,12 @@ main_menu() {
       3) reset_panel ;;
       4) uninstall_all ;;
       5) show_status ;;
+      6) set_panel_quota_menu ;;
+      7) reset_panel_usage_menu ;;
+      8) quota_run_debug_menu ;;
+      9) toggle_quota_cron_menu ;;
+      10) set_panel_validity_menu ;;
+      11) reset_panel_time_window_menu ;;
       0) exit 0 ;;
       *) color_red "Invalid choice."; sleep 1 ;;
     esac
@@ -595,9 +1273,19 @@ main_menu() {
 ########################
 
 require_root
+detect_script_path
 install_docker_if_needed
 detect_base_dir
 ensure_dirs
 detect_docker_compose_cmd
 detect_server_ip
+load_meta
+
+# Cron mode (no interactive output)
+if [[ "${1-}" == "--quota-cron" ]]; then
+  quota_run "0"
+  exit 0
+fi
+
+# Interactive menu mode
 main_menu
